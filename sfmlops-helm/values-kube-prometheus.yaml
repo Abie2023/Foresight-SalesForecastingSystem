@@ -6,5 +6,5 @@ prometheus:
 ## if we are running locally, so just leave it as default
 grafana:
   adminPassword: admin
-  # service:
-  #   type: LoadBalancer
+   service:
+     type: LoadBalancer

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
 
     kafka:
@@ -291,7 +289,7 @@ services:
         networks:
             - backend-network
         volumes:
-            - /:/host:ro,rslave
+            - /Users/krishlakhani/Downloads/docker
         command: "--path.rootfs=/host"
 
     # cadvisor
