@@ -2,42 +2,25 @@
 
 <p align="center"><b> ▶️ Highly scalable Cloud-native Machine Learning system ◀️ </b></p>
 
+------
+
 # Table of contents
-- [Overview](#overview)
-- [Key Features](#key-features)
+- [Architecture](#architecture)
 - [Tools / Technologies](#tools--technologies)
 - [Development environment](#development-environment)
 - [How things work](#how-things-work)
-- [How to setup](#how-to-setup)
-  - [With Docker Compose](#with-docker-compose)
-  - [With Kubernetes/Helm (Local cluster)](#with-kuberneteshelm-local-cluster)
+  - [Setup using Docker Compose](#with-docker-compose)
   - [With Kubernetes/Helm (on GCP)](#with-kuberneteshelm-on-gcp)
   - [Cleanup steps](#cleanup-steps)
-  - [Important note on MLflow on Cloud](#important-note-on-mlflow-on-cloud)
 - [References / Useful resources](#references--useful-resources)
-- [My notes](#my-notes)
 
+------
 
-# Overview
-**"Sales Forecast MLOps at Scale"** delivers a full-stack, production-ready solution designed to streamline the entire sales forecasting system – from development and deployment to continuous improvement. It offers flexible deployment options, supporting both on-premises environments (Docker Compose, Kubernetes) and cloud-based setups (Kubernetes, Helm), ensuring adaptability to your infrastructure.
-
-
+## Architecture
 <image src="./files/sfmlops_software_diagram.png">
 
-# Key Features
-- **Dual-Mode Inference**: Supports both batch and online inference modes, providing adaptability to various use cases and real-time prediction needs.
-- **Automated Forecast Generation**: Airflow DAGs orchestrate weekly model training and batch predictions, with the ability for on-demand retraining based on the latest data.
-- **Data-Driven Adaptability**: Kafka handles real-time data streaming, enabling the system to incorporate the latest sales information into predictions. Models are retrained on demand to maintain accuracy.
-- **Scalable Pipeline and Training**: Leverages Spark and Ray for efficient data processing and distributed model training, ensuring the system can handle large-scale datasets and training.
-- **Transparent Monitoring**: Ray and Grafana provide visibility into training performance, while Prometheus enables system-wide monitoring.
-- **User-Friendly Interface**: Streamlit offers a clear view of predictions. MLflow tracks experiments and model versions, ensuring reproducibility and streamlined updates.
-- **Best-Practices Serving**: Robust serving stack with Nginx, Gunicorn, and FastAPI for reliable and performant model deployment.
-- **CI/CD Automation**: GitHub Actions streamline the build and deployment process, automatically pushing images to Docker Hub and GCP.
-- **Cloud-native, Scalability and Flexibility**: Kubernetes and Google Cloud Platform ensure adaptability to growing data and workloads. The open-source foundation (Docker, Ray, FastAPI, etc.) offers customization and extensibility.
-
-# Tools / Technologies
-Note: Most of the service ports can be found and customized in the `.env` file at the root of this repository (or `values.yaml` and `sfmlops-helm/templates/global-configmap.yaml` for Kubernetes and Helm).
-- Platform: [Docker](https://www.docker.com/), [Kubernetes](https://kubernetes.io/), [Helm](https://helm.sh/)
+## Tools / Technologies
+- Platform: [Docker](https://www.docker.com/)
 - Cloud platform: [Google Cloud Platform](https://cloud.google.com/)
 - Experiment tracking / Model registry: [MLflow](https://mlflow.org/)
 - Pipeline orchestrator: [Airflow](https://airflow.apache.org/)
@@ -53,37 +36,73 @@ Note: Most of the service ports can be found and customized in the `.env` file a
 - Stream processing: [Spark Streaming](https://spark.apache.org/streaming/)
 - CICD: [GitHub Actions](https://github.com/features/actions)
 
-# Development environment
+------
+
+## Development environment
 1. Docker (ref: Docker version 24.0.6, build ed223bc)
-2. Kubernetes (ref: v1.27.2 (via Docker Desktop))
-3. Helm (ref: v3.14.3)
 
-# How things work
-1. After you start up the system, the **data producer** will read and store the data of the last 5 months from `services/data-producer/datasets/rossman-store-sales/train_exclude_last_10d.csv` to **Postgres**. It does this by modifying the last date of the data to be *YESTERDAY*. Afterward, it will keep publishing new messages (from `train_only_last_19d.csv` in the same directory), technically *TODAY* data, to a **Kafka** topic every 10 seconds (infinite loop).
-2. There are two main DAGs in **Airflow**:
-   1. Daily DAG:  
-       \>\> Ingest data from this Kafka topic  
-       \>\> Process and transform with **Spark Streaming**  
-       \>\> Store it in Postgres  
-   2. Weekly DAG:  
-       \>\> Pull the last four months of sales data from Postgres  
-       \>\> Use it for training new **Prophet** models, with **Ray** (*1,1115* models in total), which are tracked and registered by **MLflow**  
-       \>\> Use these newly trained models to predict the forecast of the upcoming week (next 7 days)  
-       \>\> Store the forecasts in Postgres (another table)
-3. During training, you can monitor your system and infrastructure with **Grafana** and **Prometheus**.
-4. By default, the data stream from topic `sale_rossman_store` gets stored in `rossman_sales` table and forecast results in `forecast_results` table, you can use **pgAdmin** to access it.
-5. After the previous steps are executed successfully, you/users can now access the **Streamlit** website proxied by **Nginx**.
-6. This website fetches the latest 7 predictions (technically, the next 7 days) for each store and each product and displays them in a good-looking line chart (thanks to **Altair**)
-7. From the website, users can view sales forecast of any product from any store. Notice that the subtitle of the chart contains the model ID and version.
-8. Since these forecasts are made weekly, whether users access this website on Monday or Wednesday, they will see the same chart. If, during the week, the users somehow feel like the forecast prediction is out of sync or outdated, they can trigger retraining for a specific model of that product and store.
-9.  When the users click a retrain button, the website will submit a model training job to the **training service** which then calls Ray to retrain this model. The retraining is pretty fast, usually done in under a minute, and it follows the same training strategy as the weekly training DAG (but of course, with the newest data possible).
-10. Right after retraining is done, users can select a number of future days to predict and click a forecast button to request the **forecasting service** to use the latest model to make forecasts.
-11. The result of new forecasts is then displayed in the line chart below. Notice that the model version number increased! Yoohoo! (note: For simplicity, this new forecast result won't be stored anywhere.)
+## How things work
+### 1. System Initialization
 
-# How to setup
-Prerequisites: Docker, Kubernetes, and Helm
+- The **Data Producer**:
+  - Loads the last 5 months of data from `train_exclude_last_10d.csv`.
+  - Adjusts the dates so that the latest entry becomes **yesterday**.
+  - Inserts the data into **PostgreSQL**.
+  - Begins streaming **today’s data** (from `train_only_last_19d.csv`) to the Kafka topic `sale_rossman_store` every **10 seconds** in an infinite loop.
 
-## With Docker Compose
+### 2. Data Processing Pipelines via Airflow
+#### 🗓️ Daily DAG
+- Ingests data from Kafka.
+- Processes and transforms it using **Spark Streaming**.
+- Stores the cleaned data in the `rossman_sales` table in **PostgreSQL**.
+
+#### 📅 Weekly DAG
+- Pulls the past 4 months of sales data from PostgreSQL.
+- Trains **Prophet** models in parallel using **Ray** (~11,115 models).
+- Tracks and registers models using **MLflow**.
+- Forecasts the next 7 days of sales.
+- Stores results in the `forecast_results` table in PostgreSQL.
+
+### 3. 📊 Monitoring
+- **Prometheus** and **Grafana** are used to monitor infrastructure and system health.
+
+### 4. 🗃️ Data Storage
+| Table Name        | Description                        |
+|-------------------|------------------------------------|
+| `rossman_sales`   | Cleaned sales data from Kafka      |
+| `forecast_results`| Weekly forecast results            |
+
+- Use **pgAdmin** to explore and manage PostgreSQL tables.
+
+### 5. 🌐 Streamlit Web App
+- Served via **Nginx** reverse proxy.
+- Displays the latest 7-day forecast for any store/product.
+- Uses **Altair** charts for visualization.
+- Chart subtitles show model ID and version.
+
+### 6. 🔁 Weekly Forecast Logic
+- Forecasts are refreshed weekly by the Weekly DAG.
+- Users see the same forecast throughout the week (regardless of the day accessed).
+- If a forecast appears inaccurate or outdated, users can initiate retraining.
+
+### 7. 🛠️ On-Demand Model Retraining
+- Clicking **Retrain** in the UI:
+  - Triggers a job submitted to the **Training Service**.
+  - The service uses **Ray** to retrain the selected model.
+  - Model retraining completes in **under 1 minute**.
+  - The new model version is immediately available.
+
+### 8. 📈 On-Demand Forecasting
+- After retraining, users can:
+  - Select custom future dates.
+  - Click **Forecast** to generate updated predictions.
+- These ad-hoc results are:
+  - **Displayed** directly on the chart.
+  - **Not stored** in the database.
+
+------
+
+## Setup using Docker Compose
 1. *(Optional)* In case you want to build (not pulling images):
    ```
    docker-compose build
@@ -91,66 +110,7 @@ Prerequisites: Docker, Kubernetes, and Helm
 2. ```
    docker-compose -f docker-compose.yml -f docker-compose-airflow.yml up -d
    ```
-3. Sometimes it can freeze or fail the first time, especially if your machine is not that high in spec (like mine T_T). But you can wait a second, try the last command again and it should start up fine.
-4. That's it!
-
-**Note:** Most of the services' restart is left unspecified, so they won't restart on failures (because sometimes it's quite resource-consuming during development, you see I have a poor laptop lol).
-
-## With Kubernetes/Helm (Local cluster)
-The system is quite large and heavy... I recommend running it locally just for setup testing purposes. Then if it works, just go off to the cloud if you want to play around longer OR stick with Docker Compose (it went smoother in my case)
-1. Install Helm
-   ```
-   bash install-helm.sh
-   ```
-2. Create airflow namespace:
-   ```
-   kubectl create namespace airflow
-   ```
-3. Deploy the main chart:
-   1. Fetch all dependencies
-      ```
-      cd sfmlops-helm
-      helm dependency build
-      ```
-   2. ```
-      helm -n mlops upgrade --install sfmlops-helm ./ --create-namespace -f values.yaml -f values-ray.yaml
-      ```
-4. Deploy Kafka:
-   1. (1st time only)
-      ```
-      helm repo add bitnami https://charts.bitnami.com/bitnami
-      ```
-   2. ```
-      helm -n kafka upgrade --install kafka-release oci://registry-1.docker.io/bitnamicharts/kafka --create-namespace --version 23.0.7 -f values-kafka.yaml
-      ```
-5. Deploy Airflow:
-   1. (1st time only)
-      ```
-      helm repo add apache-airflow https://airflow.apache.org
-      ```
-   2. ```
-      helm -n airflow upgrade --install airflow apache-airflow/airflow --create-namespace --version 1.13.1 -f values-airflow.yaml
-      ```
-   3. Sometimes, you might get a timeout error from this command (if you do, it means your machine spec is too poor for this system (like mine lol)). It's totally fine. Just keep checking the status with `kubectl`, if all resources start up correctly, go with it otherwise try running the command again.
-6. Deploy Prometheus and Grafana:
-   1. (1st time only)
-      ```
-      helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-      ```
-   2. ```
-      helm -n monitoring upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack  --create-namespace --version 57.2.0 -f values-kube-prometheus.yaml
-      ```
-   3. Forward port for Grafana:
-      ```
-      kubectl port-forward svc/kube-prometheus-stack-grafana 3000:80 -n monitoring
-      ```
-      *OR* assign `grafana.service.type: LoadBalancer` in `values-kube-prometheus.yaml`
-   4. One of the good things about kube-prometheus-stack is that it comes with many pre-installed/pre-configured dashboards for Kubernetes. Feel free to explore!
-7. That's it! Enjoy your highly scalable Machine Learning system for Sales forecasting! ;)
-
-**Note:** If you want to change namespace `kafka` and/or release name `kafka-release` of Kafka, please also change them in `values.yaml` and `KAFKA_BOOTSTRAP_SERVER` env var in `values-airflow.yaml`. They are also used in templating.
-
-**Note 2:** In Docker Compose, Ray has already been configured to pull the embedded dashboards from Grafana. But in Kubernetes, this process involves a lot more manual steps. So, I intentionally left it undone for ease of setup of this project. You can follow the guide [here](https://docs.ray.io/en/latest/cluster/kubernetes/k8s-ecosystem/prometheus-grafana.html) if you want to anyway.
+3. Sometimes, it can freeze or fail the first time, especially if your machine is not that high-spec. But you can wait a second, try the last command again, and it should start up fine.
 
 ## With Kubernetes/Helm (on GCP)
 Prerequisites: GKE Cluster (Standard cluster, *NOT* Autopilot), Artifact Registry, Service Usage API, gcloud cli
@@ -170,18 +130,16 @@ Prerequisites: GKE Cluster (Standard cluster, *NOT* Autopilot), Artifact Registr
 
 **Note:** For the machine type of node pool in the GKE cluster, from experiments, `e2-medium` (default) is not quite enough, especially for Airflow and Ray. In my case, I went for `e2-standard-8` with 1 node (explanation on why only 1 node is in [Important note on MLflow on Cloud](#important-note-on-mlflow-on-cloud) section). I also found myself the need to increase the quota for PVC in IAM too.
 
+
 ## Cleanup steps
 ```
 helm uninstall sfmlops-helm -n mlops
 helm uninstall kafka-release -n kafka
 helm uninstall airflow -n airflow
-helm uninstall kube-prometheus-stack -n monitoring
+helm uninstall kube-Prometheus-stack -n monitoring
 ```
 
-## Important note on MLflow on Cloud
-In this setting, I set the MLflow's artifact path to point to a local path. Internally, MLflow expects this path to be accessible from both MLflow client and server (honestly, I'm not a fan of this model either). It is meant to be an object storage path like S3 (AWS) or Cloud Storage (GCP). For a full on-premises experience, we can create a Docker volume and mount it to the EXACT same path on both client and server to address this. In a local Kubernetes cluster, we can do the same thing by creating a PVC with `accessModes: ReadWriteOnce` (in `sfmlops-helm/templates/mlflow-pvc.yaml`).
-
-**However** for on-cloud Kubernetes with a typical multi-node cluster, if we want the PVC to be able to read and write across nodes, we need to set `accessModes: ReadWriteMany`. Most cloud providers *DO NOT* support this type of PVC and recommend using centralized storage instead. Therefore, if you want to just try it out and run for fun, you can use this exact setting and create a single-node cluster (which will behave similarly to a local Kubernetes cluster, just on the cloud). For a real production environment, please create a cloud storage bucket, remove `mlflow-pvc.yaml` and its mount paths, and change the artifact path variable `MLFLOW_ARTIFACT_ROOT` in `sfmlops-helm/templates/global-configmap.yaml` to the cloud storage path. Here's the official [doc](https://mlflow.org/docs/latest/tracking/artifacts-stores.html) for more information.
+-------
 
 # References / Useful resources
 - Ray sample config: https://github.com/ray-project/kuberay/tree/master/ray-operator/config/samples
@@ -190,6 +148,3 @@ In this setting, I set the MLflow's artifact path to point to a local path. Inte
 - Airflow Helm default values.yaml: https://github.com/apache/airflow/blob/main/chart/values.yaml
 - dataset: https://www.kaggle.com/datasets/pratyushakar/rossmann-store-sales
 - Original Airflow's docker-compose file: https://airflow.apache.org/docs/apache-airflow/2.8.3/docker-compose.yaml
-
-# My notes
-If you have any comments, questions, or want to learn more, check out `notes/README.md`. I have included a lot of useful notes about how and why I made certain choices during development. Mostly, they cover tool selection, design choices, and some caveats.
